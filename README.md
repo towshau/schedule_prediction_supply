@@ -23,20 +23,17 @@ This system:
 graph TB
     subgraph "Coach Supply System"
         A[Coach Preferences] --> B[Schedule Validation]
-        B --> C[Capacity Analysis]
-        C --> D[Schedule Optimization]
-        D --> E[Assignment Output]
+        B --> C[Schedule Optimization]
+        C --> D[Assignment Output]
         
-        F[Staff Database] --> C
-        G[Member Database] --> C
+        F[Staff Database] --> B
         
-        E --> H[Coach Schedules]
-        E --> I[Capacity Reports]
+        D --> H[Coach Schedules]
     end
     
     style A fill:#e1f5ff
-    style E fill:#d4edda
-    style D fill:#fff3cd
+    style D fill:#d4edda
+    style C fill:#fff3cd
 ```
 
 ---
@@ -49,7 +46,6 @@ graph TB
 erDiagram
     STAFF_DATABASE ||--o{ SCHEDULE_PREFERENCES : submits
     SCHEDULE_PREFERENCES }o--|| SCHEDULE_PERIODS : "belongs to"
-    STAFF_DATABASE ||--o{ MEMBER_MEMBERSHIPS : coaches
     
     STAFF_DATABASE {
         uuid id PK
@@ -85,18 +81,6 @@ erDiagram
         date end_date
         text period_name
         enum status
-    }
-    
-    MEMBER_MEMBERSHIPS {
-        uuid id PK
-        uuid coach_id FK
-        uuid handoff_coach_id FK
-        uuid member_id
-        date start_date
-        date end_date
-        enum membership_stage
-        enum status
-        uuid primary_membership_id
     }
 ```
 
@@ -204,6 +188,97 @@ graph TD
 
 ---
 
+## 📅 Period Management & Defaults
+
+### How Future Periods Work
+
+**When a new period is created:**
+
+```mermaid
+flowchart TD
+    Start([New Period Created]) --> Check{Previous<br/>Preferences<br/>Exist?}
+    
+    Check -->|No| Empty[Period Starts Empty]
+    Empty --> Manual[Coaches Submit New Preferences]
+    
+    Check -->|Yes| NoAuto[No Automatic Copy]
+    NoAuto --> Blank[New Period Starts Blank]
+    Blank --> Manual
+    
+    Manual --> Submit[Preferences Stored with period_id]
+    Submit --> Link[Linked to Specific Period]
+    Link --> End([Period Ready for Scheduling])
+    
+    style Empty fill:#fff3cd
+    style Blank fill:#fff3cd
+    style Link fill:#d4edda
+```
+
+### Important Behavior
+
+**Preferences DO NOT automatically carry forward:**
+- Each `period_id` is **independent**
+- No preferences = **empty schedule** for that period
+- Coaches must **re-submit** preferences for each new period
+- Previous period preferences remain unchanged
+
+**Why This Design?**
+1. **Flexibility** - Coach availability changes between periods
+2. **Accuracy** - Forces review of constraints each period
+3. **Independence** - Period rollbacks don't affect other periods
+4. **Audit Trail** - Clear record of when preferences were submitted
+
+### Querying Preferences by Period
+
+```sql
+-- Check if a coach has submitted preferences for a specific period
+SELECT 
+    s.coach_name,
+    COUNT(sp.id) as total_preferences,
+    MAX(sp.submitted_at) as last_submission
+FROM staff_database s
+LEFT JOIN schedule_preferences sp 
+    ON s.id = sp.staff_id 
+    AND sp.period_id = 'YOUR_PERIOD_ID'
+WHERE s.staff_status = 'active'
+GROUP BY s.id, s.coach_name
+HAVING COUNT(sp.id) = 0;  -- Coaches with NO preferences yet
+```
+
+### Best Practices
+
+**For New Periods:**
+1. Create the period in advance (2-4 weeks before start)
+2. Notify coaches to submit preferences
+3. Set submission deadline (1 week before period starts)
+4. Validate all HARD constraints before finalizing
+5. Run optimization algorithm to generate schedules
+
+**For Preference Copying (Manual Process):**
+If you want to copy preferences from a previous period:
+
+```sql
+-- Copy preferences from previous period (one-time operation)
+INSERT INTO schedule_preferences 
+    (staff_id, period_id, block, preference_type, rank, coach_name)
+SELECT 
+    staff_id,
+    'NEW_PERIOD_ID' as period_id,  -- Target period
+    block,
+    preference_type,
+    rank,
+    coach_name
+FROM schedule_preferences
+WHERE period_id = 'PREVIOUS_PERIOD_ID'  -- Source period
+    AND staff_id IN (
+        SELECT id FROM staff_database WHERE staff_status = 'active'
+    );
+```
+
+⚠️ **Note:** This is a manual operation and should be used carefully. Coaches should still review and update the copied preferences.
+
+---
+
 ## 🔄 Preference Submission Flow
 
 ```mermaid
@@ -236,47 +311,6 @@ flowchart TD
 
 ---
 
-## 📈 Coach Capacity Management
-
-### RM (Relationship Management) Ceiling System
-
-```mermaid
-mindmap
-    root((Coach Capacity))
-        RM Ceiling
-            Max client load
-            Role-based limits
-            Experience factor
-        Current Load
-            Primary Members
-            Handoff Members
-            Indefinite Holds
-        Available Capacity
-            RM Ceiling - Total Members
-            New client allocation
-            Handoff availability
-        Utilization
-            Percentage capacity
-            Workload balance
-            Distribution metrics
-```
-
-### Capacity Calculation
-
-**Formula:**
-```
-Available Capacity = RM Ceiling - (Primary Members + Handoff Members)
-```
-
-**Member Count Rules:**
-- Count **active members** with `end_date > CURRENT_DATE`
-- Exclude `nosale` memberships
-- Include **indefinite holds** within membership duration
-- Exclude dependent/family memberships (`primary_membership_id IS NULL`)
-- Count each member only **once** per coach
-
----
-
 ## 🔍 Supply-Side Metrics
 
 ### Key Performance Indicators
@@ -285,25 +319,24 @@ Available Capacity = RM Ceiling - (Primary Members + Handoff Members)
 graph LR
     subgraph "Coach Supply Metrics"
         A[Total Coaches] --> B[Active Coaches]
-        B --> C[Available Capacity]
-        C --> D[Utilization Rate]
+        B --> C[Total Preferences]
         
-        E[Preference Coverage] --> F[Schedule Conflicts]
-        F --> G[Optimization Score]
+        D[Preference Coverage] --> E[Schedule Conflicts]
+        E --> F[Optimization Score]
         
-        H[Time Block Coverage] --> I[Peak vs. Off-Peak]
-        I --> J[Coverage Gaps]
+        G[Time Block Coverage] --> H[Peak vs. Off-Peak]
+        H --> I[Coverage Gaps]
     end
     
     style C fill:#d4edda
-    style F fill:#fff3cd
-    style J fill:#ffcdd2
+    style E fill:#fff3cd
+    style I fill:#ffcdd2
 ```
 
 **Metrics Tracked:**
 1. **Coach Availability**: Percentage of time blocks with available coaches
 2. **Preference Satisfaction**: % of preferences honored in final schedule
-3. **Capacity Utilization**: Average % of RM ceiling utilized
+3. **Time Block Coverage**: Number of coaches available per time block
 4. **Coverage Gaps**: Time blocks with insufficient coach coverage
 5. **Constraint Violations**: Number of HARD constraints broken (should be 0)
 
@@ -385,39 +418,26 @@ GROUP BY sp.block
 ORDER BY sp.block;
 ```
 
-### Coach Capacity Overview
+### Coach Availability Summary
 
 ```sql
 SELECT 
     s.coach_name,
+    s.role,
     s.rm_ceiling,
-    COUNT(DISTINCT CASE 
-        WHEN m.end_date > CURRENT_DATE 
-        AND m.membership_stage <> 'nosale'
-        AND m.primary_membership_id IS NULL 
-        THEN m.member_id 
-    END) AS current_members,
-    s.rm_ceiling - COUNT(DISTINCT CASE 
-        WHEN m.end_date > CURRENT_DATE 
-        AND m.membership_stage <> 'nosale'
-        AND m.primary_membership_id IS NULL 
-        THEN m.member_id 
-    END) AS available_capacity,
-    ROUND(
-        COUNT(DISTINCT CASE 
-            WHEN m.end_date > CURRENT_DATE 
-            AND m.membership_stage <> 'nosale'
-            AND m.primary_membership_id IS NULL 
-            THEN m.member_id 
-        END)::numeric / NULLIF(s.rm_ceiling, 0) * 100, 
-        2
-    ) AS utilization_pct
+    s.home_gym,
+    s.tod_coaching,
+    COUNT(sp.id) as total_preferences,
+    COUNT(CASE WHEN sp.preference_type = 'HARD' THEN 1 END) as hard_constraints,
+    COUNT(CASE WHEN sp.preference_type = 'SOFT' THEN 1 END) as soft_preferences,
+    COUNT(CASE WHEN sp.preference_type = 'PREFERRED' THEN 1 END) as preferred_slots
 FROM staff_database s
-LEFT JOIN member_memberships m ON s.id = m.coach_id
+LEFT JOIN schedule_preferences sp ON s.id = sp.staff_id 
+    AND sp.period_id = 'YOUR_PERIOD_ID'
 WHERE s.staff_status = 'active'
     AND s.role IN ('Coach', 'Senior Coach', 'Advanced Coach', 'Head Coach', 'Gym Manager')
-GROUP BY s.id, s.coach_name, s.rm_ceiling
-ORDER BY utilization_pct DESC NULLS LAST;
+GROUP BY s.id, s.coach_name, s.role, s.rm_ceiling, s.home_gym, s.tod_coaching
+ORDER BY s.coach_name;
 ```
 
 ---
@@ -452,25 +472,7 @@ ORDER BY sp.block;
 - Color-coded by preference type
 - Click to view/edit preference details
 
-### 2. Capacity Dashboard
-
-**Component Type:** Table with Summary Row
-
-**Data Source:** Use the "Coach Capacity Overview" query above
-
-**Columns:**
-- Coach Name
-- RM Ceiling
-- Current Members
-- Available Capacity
-- Utilization %
-
-**Summary Row:**
-- Total RM Ceiling: `SUM`
-- Average Utilization: `AVG`
-- Total Available Capacity: `SUM`
-
-### 3. Coverage Heatmap
+### 2. Coverage Heatmap
 
 **Component Type:** Plotly Chart (Heatmap)
 
