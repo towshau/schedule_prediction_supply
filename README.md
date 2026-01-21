@@ -237,9 +237,9 @@ Once deployed:
 
 ## 📞 Support
 
-**System Maintainer:** Biomap Operations Team  
+**System Maintainer:** Shaun Townsend
 **Database:** Supabase (PostgreSQL)  
-**Dashboard:** Retool  
+**Dashboard:** Retool - To be completed  
 **Repository:** [schedule_prediction_supply](https://github.com/towshau/schedule_prediction_supply)
 
 ---
